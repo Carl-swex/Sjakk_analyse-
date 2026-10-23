@@ -10,6 +10,13 @@ export interface EngineResult {
   depth: number;
 }
 
+export interface AnalyzeOptions {
+  /** Called on every completed search depth with the result so far. */
+  onUpdate?: (result: EngineResult) => void;
+  /** If aborted before the job starts, it is skipped (resolves with an empty result). */
+  signal?: AbortSignal;
+}
+
 export class Engine {
   private worker: Worker;
   private ready: Promise<void>;
@@ -34,9 +41,10 @@ export class Engine {
   }
 
   /** Analyse a position. Calls are serialized, so it is safe to fire many at once. */
-  analyze(fen: string, depth: number): Promise<EngineResult> {
+  analyze(fen: string, depth: number, { onUpdate, signal }: AnalyzeOptions = {}): Promise<EngineResult> {
     const run = async () => {
       await this.ready;
+      if (signal?.aborted) return { depth: 0 };
       const whiteToMove = fen.split(' ')[1] === 'w';
       const sign = whiteToMove ? 1 : -1;
       return new Promise<EngineResult>((resolve) => {
@@ -46,6 +54,7 @@ export class Engine {
             const d = /\bdepth (\d+)/.exec(line);
             const cp = /\bscore cp (-?\d+)/.exec(line);
             const mate = /\bscore mate (-?\d+)/.exec(line);
+            const pv = /\bpv (\S+)/.exec(line);
             if (d) result.depth = Number(d[1]);
             if (cp) {
               result.cp = sign * Number(cp[1]);
@@ -54,6 +63,8 @@ export class Engine {
               result.mate = sign * Number(mate[1]);
               result.cp = undefined;
             }
+            if (pv) result.bestMove = pv[1];
+            onUpdate?.({ ...result });
           } else if (line.startsWith('bestmove')) {
             const move = line.split(' ')[1];
             if (move && move !== '(none)') result.bestMove = move;
@@ -69,7 +80,12 @@ export class Engine {
     return job;
   }
 
-  /** Abort any running search; pending queued jobs are dropped by terminating. */
+  /** End the running search early; its promise resolves with the best result so far. */
+  stop() {
+    this.worker.postMessage('stop');
+  }
+
+  /** Kill the worker; pending jobs never resolve. */
   terminate() {
     this.worker.terminate();
   }

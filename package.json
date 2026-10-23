@@ -1,27 +1,57 @@
 {
   "name": "chess-analyzer",
+  "productName": "Sjakkanalyse",
   "version": "1.0.0",
+  "description": "Sjakkanalyse med Stockfish",
+  "author": "Jesper Joers",
+  "license": "ISC",
+  "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "postinstall": "node scripts/copy-stockfish.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
-  },
-  "author": "",
-  "license": "ISC",
-  "type": "module",
-  "dependencies": {
-    "chess.js": "^1.4.0",
-    "react": "^19.3.1",
-    "react-chessboard": "^5.12.1",
-    "react-dom": "^19.3.1",
-    "stockfish": "^19.0.1"
+    "preview": "vite preview",
+    "electron": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win nsis"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "chess.js": "^1.4.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.15.3",
+    "react": "^19.3.1",
+    "react-chessboard": "^5.12.1",
+    "react-dom": "^19.3.1",
+    "stockfish": "^19.0.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.5"
+  },
+  "build": {
+    "appId": "no.jesperjoers.sjakkanalyse",
+    "productName": "Sjakkanalyse",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Sjakkanalyse",
+      "uninstallDisplayName": "Sjakkanalyse",
+      "artifactName": "Sjakkanalyse-Setup-${version}.${ext}"
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { winChanceWhite, type Eval, type MoveAnalysis } from '../analysis';
+import { barPercent, type Eval, type MoveAnalysis } from '../analysis';
 
 const W = 600;
 const H = 120;
@@ -14,7 +14,7 @@ export function EvalGraph({ evals, moves, current, onSelect }: Props) {
   const n = evals.length;
   if (n < 2) return null;
   const x = (i: number) => (i / (n - 1)) * W;
-  const y = (e: Eval | undefined) => H - ((e ? winChanceWhite(e) : 50) / 100) * H;
+  const y = (e: Eval | undefined) => H - ((e ? barPercent(e) : 50) / 100) * H;
 
   const points = evals.map((e, i) => `${x(i)},${y(e)}`).join(' ');
   const area = `0,${H} ${points} ${W},${H}`;

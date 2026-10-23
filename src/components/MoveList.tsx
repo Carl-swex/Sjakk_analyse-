@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { Classification, MoveAnalysis, Position } from '../analysis';
+import { TAGS } from '../tags';
 
 const SYMBOL: Record<Classification, string> = {
   best: '★',
@@ -40,10 +41,17 @@ export function MoveList({ positions, moves, current, onSelect }: Props) {
               ref={c.ply === current ? activeRef : undefined}
               className={`move ${c.analysis?.classification ?? ''} ${c.ply === current ? 'active' : ''}`}
               onClick={() => onSelect(c.ply)}
-              title={c.analysis ? `${c.analysis.classification} (−${c.analysis.winDrop.toFixed(1)}%)` : undefined}
+              title={
+                c.analysis
+                  ? `${c.analysis.tag ? `${TAGS[c.analysis.tag].label} · ` : ''}${c.analysis.classification} (−${c.analysis.winDrop.toFixed(1)}%)`
+                  : undefined
+              }
             >
               {c.p.san}
-              {c.analysis && <span className="move-symbol">{SYMBOL[c.analysis.classification]}</span>}
+              {c.analysis && c.analysis.tag !== 'beast' && (
+                <span className="move-symbol">{SYMBOL[c.analysis.classification]}</span>
+              )}
+              {c.analysis?.tag && <span className="move-tag">{TAGS[c.analysis.tag].icon}</span>}
             </button>
           ) : (
             <span key={j} className="move empty">{j === 0 && blackFirst && i === 0 ? '…' : ''}</span>

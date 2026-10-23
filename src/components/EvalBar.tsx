@@ -1,7 +1,7 @@
-import { formatEval, winChanceWhite, type Eval } from '../analysis';
+import { barPercent, formatEval, type Eval } from '../analysis';
 
 export function EvalBar({ evaluation, flipped }: { evaluation?: Eval; flipped: boolean }) {
-  const white = evaluation ? winChanceWhite(evaluation) : 50;
+  const white = evaluation ? barPercent(evaluation) : 50;
   const whiteAhead = white >= 50;
   return (
     <div className={`eval-bar${flipped ? ' flipped' : ''}`}>

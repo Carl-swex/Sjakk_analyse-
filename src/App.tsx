@@ -7,15 +7,21 @@ import {
   parsePgn,
   playerAccuracy,
   terminalEval,
+  tryMove,
+  uciToSan,
   type Eval,
   type Position,
+  type Tag,
 } from './analysis';
 import { Engine } from './engine';
 import { EvalBar } from './components/EvalBar';
 import { EvalGraph } from './components/EvalGraph';
 import { MoveList } from './components/MoveList';
+import { TAGS } from './tags';
+import { useLiveEval } from './useLiveEval';
 
 const DEPTH = 16;
+const LIVE_DEPTH = 18;
 
 const SAMPLE_PGN = `[Event "Paris Opera"]
 [White "Paul Morphy"]
@@ -34,12 +40,27 @@ const LABELS = {
   blunder: 'Blunder',
 } as const;
 
+/** A sideline explored by dragging pieces. positions[0] is the game position at `base`. */
+interface Variation {
+  base: number;
+  positions: Position[];
+  index: number;
+}
+
+/** "12." before a White move, "12..." before a Black move that starts a line. */
+function moveNumber(before: Position, first: boolean): string {
+  const [, turn, , , , full] = before.fen.split(' ');
+  if (turn === 'w') return `${full}. `;
+  return first ? `${full}... ` : '';
+}
+
 export default function App() {
   const [pgn, setPgn] = useState(SAMPLE_PGN);
   const [positions, setPositions] = useState<Position[]>([]);
   const [headers, setHeaders] = useState<Record<string, string>>({});
   const [evals, setEvals] = useState<(Eval | undefined)[]>([]);
   const [current, setCurrent] = useState(0);
+  const [variation, setVariation] = useState<Variation | null>(null);
   const [flipped, setFlipped] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const engineRef = useRef<Engine | null>(null);
@@ -59,6 +80,7 @@ export default function App() {
     setHeaders(parsed.headers);
     setEvals(new Array(parsed.positions.length).fill(undefined));
     setCurrent(0);
+    setVariation(null);
 
     // Fresh engine per run: terminating the old one cancels any in-flight analysis.
     engineRef.current?.terminate();
@@ -90,10 +112,44 @@ export default function App() {
   const last = positions.length - 1;
   const done = evals.filter(Boolean).length;
   const analyzing = positions.length > 0 && done < positions.length;
+  const inSideline = variation !== null && variation.index > 0;
+
+  const selectMain = useCallback((ply: number) => {
+    setVariation(null);
+    setCurrent(ply);
+  }, []);
+
+  const backToGame = useCallback(() => {
+    if (variation) setCurrent(variation.base);
+    setVariation(null);
+  }, [variation]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+      if (e.key === 'f') setFlipped((f) => !f);
+      if (e.key === 'Escape') backToGame();
+
+      if (variation) {
+        const end = variation.positions.length - 1;
+        const step: Record<string, (i: number) => number> = {
+          ArrowLeft: (i) => i - 1,
+          ArrowRight: (i) => i + 1,
+          ArrowUp: () => 0,
+          Home: () => 0,
+          ArrowDown: () => end,
+          End: () => end,
+        };
+        const fn = step[e.key];
+        if (!fn) return;
+        e.preventDefault();
+        const next = fn(variation.index);
+        // Stepping back past the start of the sideline returns to the game.
+        if (next < 0) backToGame();
+        else setVariation({ ...variation, index: Math.min(end, next) });
+        return;
+      }
+
       const step: Record<string, (c: number) => number> = {
         ArrowLeft: (c) => c - 1,
         ArrowRight: (c) => c + 1,
@@ -102,7 +158,6 @@ export default function App() {
         ArrowDown: () => last,
         End: () => last,
       };
-      if (e.key === 'f') setFlipped((f) => !f);
       const fn = step[e.key];
       if (!fn) return;
       e.preventDefault();
@@ -110,20 +165,45 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [last]);
+  }, [last, variation, backToGame]);
 
-  const pos = positions[current];
-  const currentEval = evals[current];
-  const currentMove = current > 0 ? moves[current - 1] : undefined;
+  const pos = variation ? variation.positions[variation.index] : positions[current];
 
-  const arrows =
-    currentEval?.bestMove && current < last
-      ? [{ startSquare: currentEval.bestMove.slice(0, 2), endSquare: currentEval.bestMove.slice(2, 4), color: 'rgba(0, 120, 255, 0.7)' }]
-      : [];
+  // Positions off the game line have no stored eval, so a second engine evaluates them live.
+  const live = useLiveEval(inSideline ? pos.fen : null, LIVE_DEPTH);
+  const mainPly = variation ? variation.base : current;
+  const shownEval = inSideline ? live?.eval : evals[mainPly];
+  const currentMove = !inSideline && mainPly > 0 ? moves[mainPly - 1] : undefined;
+
+  const onPieceDrop = ({ sourceSquare, targetSquare }: { sourceSquare: string; targetSquare: string | null }) => {
+    if (!pos || !targetSquare) return false;
+    const next = tryMove(pos.fen, sourceSquare, targetSquare);
+    if (!next) return false;
+
+    if (!inSideline && positions[mainPly + 1]?.lan === next.lan) {
+      // Played the game move: just follow the game.
+      selectMain(mainPly + 1);
+    } else if (!variation) {
+      setVariation({ base: current, positions: [positions[current], next], index: 1 });
+    } else if (variation.positions[variation.index + 1]?.lan === next.lan) {
+      setVariation({ ...variation, index: variation.index + 1 });
+    } else {
+      // Branching from the middle of the sideline replaces everything after it.
+      setVariation({ ...variation, positions: [...variation.positions.slice(0, variation.index + 1), next], index: variation.index + 1 });
+    }
+    return true;
+  };
+
+  const sideToMove = pos?.fen.split(' ')[1];
+  const bestMove = shownEval?.bestMove;
+  const arrows = bestMove
+    ? [{ startSquare: bestMove.slice(0, 2), endSquare: bestMove.slice(2, 4), color: 'rgba(0, 120, 255, 0.7)' }]
+    : [];
+  const highlight: React.CSSProperties = { background: 'rgba(255, 220, 0, 0.4)' };
   const squareStyles: Record<string, React.CSSProperties> =
-    pos?.from && pos.to
-      ? { [pos.from]: { background: 'rgba(255, 220, 0, 0.4)' }, [pos.to]: { background: 'rgba(255, 220, 0, 0.4)' } }
-      : {};
+    pos?.from && pos.to ? { [pos.from]: highlight, [pos.to]: highlight } : {};
+  const badge: { square: string; tag: Tag } | null =
+    currentMove?.tag && pos?.to ? { square: pos.to, tag: currentMove.tag } : null;
 
   const whiteAcc = playerAccuracy(moves, positions, 'w');
   const blackAcc = playerAccuracy(moves, positions, 'b');
@@ -152,34 +232,46 @@ export default function App() {
           <div className="board-column">
             <PlayerLine name={headers[flipped ? 'White' : 'Black'] ?? (flipped ? 'Hvit' : 'Svart')} acc={flipped ? whiteAcc : blackAcc} />
             <div className="board-wrap">
-              <EvalBar evaluation={currentEval} flipped={flipped} />
+              <EvalBar evaluation={shownEval} flipped={flipped} />
               <div className="board">
                 <Chessboard
                   options={{
                     id: 'analysis-board',
                     position: pos.fen,
                     boardOrientation: flipped ? 'black' : 'white',
-                    allowDragging: false,
+                    allowDragging: true,
                     allowDrawingArrows: false,
+                    canDragPiece: ({ piece }) => piece.pieceType[0] === sideToMove,
+                    onPieceDrop,
                     arrows,
                     squareStyles,
+                    squareRenderer: ({ square, children }) => (
+                      <div style={{ width: '100%', height: '100%', position: 'relative', ...squareStyles[square] }}>
+                        {children}
+                        {badge?.square === square && (
+                          <span className={`square-badge ${badge.tag}`} title={TAGS[badge.tag].label}>
+                            {TAGS[badge.tag].icon}
+                          </span>
+                        )}
+                      </div>
+                    ),
                   }}
                 />
               </div>
             </div>
             <PlayerLine name={headers[flipped ? 'Black' : 'White'] ?? (flipped ? 'Svart' : 'Hvit')} acc={flipped ? blackAcc : whiteAcc} />
             <div className="nav">
-              <button onClick={() => setCurrent(0)}>⏮</button>
-              <button onClick={() => setCurrent((c) => Math.max(0, c - 1))}>◀</button>
-              <button onClick={() => setCurrent((c) => Math.min(last, c + 1))}>▶</button>
-              <button onClick={() => setCurrent(last)}>⏭</button>
+              <button onClick={() => selectMain(0)}>⏮</button>
+              <button onClick={() => selectMain(Math.max(0, mainPly - 1))}>◀</button>
+              <button onClick={() => selectMain(Math.min(last, mainPly + 1))}>▶</button>
+              <button onClick={() => selectMain(last)}>⏭</button>
               <button onClick={() => setFlipped((f) => !f)} title="Snu brettet (F)">⇅</button>
             </div>
           </div>
 
           <div className="side-column">
             <div className="current-info">
-              <strong>{formatEval(currentEval)}</strong>
+              <strong>{formatEval(shownEval)}</strong>
               {pos.san && <span> etter {pos.san}</span>}
               {currentMove && (
                 <span className={`badge ${currentMove.classification}`}>
@@ -187,11 +279,45 @@ export default function App() {
                   {currentMove.winDrop >= 2 && ` (−${currentMove.winDrop.toFixed(1)}%)`}
                 </span>
               )}
-              {currentEval?.bestMove && current < last && <div className="best-move">Beste: {currentEval.bestMove}</div>}
+              {currentMove?.tag && (
+                <span className={`badge tag-${currentMove.tag}`}>
+                  {TAGS[currentMove.tag].icon} {TAGS[currentMove.tag].label}
+                </span>
+              )}
+              {bestMove && (
+                <div className="best-move">
+                  Beste: {uciToSan(pos.fen, bestMove)}
+                  {inSideline && live && <span> · dybde {live.depth}</span>}
+                </div>
+              )}
             </div>
-            <MoveList positions={positions} moves={moves} current={current} onSelect={setCurrent} />
-            <EvalGraph evals={evals} moves={moves} current={current} onSelect={setCurrent} />
-            <p className="hint">← → navigerer · ↑ ↓ start/slutt · F snur brettet</p>
+
+            {variation && (
+              <div className="variation">
+                <div className="variation-header">
+                  <span>Variant</span>
+                  <button onClick={backToGame} title="Esc">
+                    ↩ Tilbake til partiet
+                  </button>
+                </div>
+                <div className="variation-moves">
+                  {variation.positions.slice(1).map((p, i) => (
+                    <button
+                      key={i}
+                      className={`move ${i + 1 === variation.index ? 'active' : ''}`}
+                      onClick={() => setVariation({ ...variation, index: i + 1 })}
+                    >
+                      {moveNumber(variation.positions[i], i === 0)}
+                      {p.san}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <MoveList positions={positions} moves={moves} current={mainPly} onSelect={selectMain} />
+            <EvalGraph evals={evals} moves={moves} current={mainPly} onSelect={selectMain} />
+            <p className="hint">Dra brikker for å utforske · ← → navigerer · ↑ ↓ start/slutt · Esc tilbake · F snur brettet</p>
           </div>
         </main>
       )}

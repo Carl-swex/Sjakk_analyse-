@@ -21,3 +21,9 @@ Thumbs.db
 # Env
 .env
 .env.local
+
+# Electron installer output
+release/
+
+# Office lock files
+~$*
